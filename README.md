@@ -77,7 +77,7 @@ antigen bundle sunlei/zsh-ssh
 
 ## Usage
 
-Just press <kbd>Tab</kbd> after `ssh` command as usual.
+Just press <kbd>Tab</kbd> after `ssh` or `sshrc` command as usual.
 
 ### SSH Config Example
 
