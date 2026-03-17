@@ -200,7 +200,7 @@ _ssh_host_list() {
 
 
 _fzf_list_generator() {
-  local header host_list
+  local host_list
 
   if [ -n "$1" ]; then
     host_list="$1"
@@ -208,18 +208,20 @@ _fzf_list_generator() {
     host_list=$(_ssh_host_list)
   fi
 
-  header="
-Alias|->|Hostname|User|Desc|Conn
-─────|──|────────|────|────|────
-"
-
-  host_list="${header}\n${host_list}"
-
-  printf '%b\n' "$host_list" | command tr '|' '\t'
+  # Output two tab-separated columns:
+  #   1) raw machine-readable record
+  #   2) aligned display text for fzf
+  printf '%s\n' "$host_list" | command awk -F'\\|' '
+    {
+      raw = $0
+      display = sprintf("%-24s %-2s %-20s %-12s %-20s %-6s", $1, $2, $3, $4, $5, $6)
+      printf "%s\t%s\n", raw, display
+    }
+  '
 }
 
 _set_lbuffer() {
-  local result selected_host connect_cmd is_fzf_result fallback_cmd selected_cmd
+  local result selected_host connect_cmd is_fzf_result fallback_cmd selected_cmd raw_result
   result="$1"
   is_fzf_result="$2"
   fallback_cmd="${3:-ssh}"
@@ -228,8 +230,14 @@ _set_lbuffer() {
     selected_host=$(cut -f 1 -d "|" <<< "$result")
     selected_cmd=$(cut -f 5 -d "|" <<< "$result")
   else
-    selected_host=$(cut -f 1 <<< "$result")
-    selected_cmd=$(cut -f 6 <<< "$result")
+    raw_result=${result%%$'\t'*}
+    if [[ "$raw_result" == *"|"* ]]; then
+      selected_host=$(cut -f 1 -d "|" <<< "$raw_result")
+      selected_cmd=$(cut -f 5 -d "|" <<< "$raw_result")
+    else
+      selected_host=$(cut -f 1 <<< "$result")
+      selected_cmd=$(cut -f 6 <<< "$result")
+    fi
   fi
 
   if [[ "$selected_cmd" != "ssh" && "$selected_cmd" != "sshrc" ]]; then
@@ -242,10 +250,11 @@ _set_lbuffer() {
 }
 
 _fzf_pick_ssh_host() {
-  local host_list prompt query
+  local host_list prompt query table_header
   host_list="$1"
   prompt="${2:-SSH Remote > }"
   query="$3"
+  table_header='Alias                    -> Hostname             User         Desc                 Conn'
 
   _fzf_list_generator "$host_list" | fzf \
     --height 40% \
@@ -253,13 +262,15 @@ _fzf_pick_ssh_host() {
     --border \
     --cycle \
     --info=inline \
-    --header-lines=2 \
+    --header="$table_header" \
     --reverse \
     --prompt="$prompt" \
     --query="$query" \
+    --delimiter=$'\t' \
+    --with-nth=2 \
     --no-separator \
     --bind 'shift-tab:up,tab:down,bspace:backward-delete-char/eof' \
-    --preview 'ssh -T -G $(cut -f 1 <<< {}) | grep -i -E "^User |^HostName |^Port |^ControlMaster |^ForwardAgent |^LocalForward |^IdentityFile |^RemoteForward |^ProxyCommand |^ProxyJump " | column -t' \
+    --preview 'raw=$(cut -f 1 <<< {}); target=${raw%%|*}; desc=$(cut -d "|" -f 5 <<< "$raw"); if [[ -n "${desc// }" ]]; then printf "Desc  %b\n\n" "$desc"; fi; ssh -T -G "$target" | grep -i -E "^User |^HostName |^Port |^ControlMaster |^ForwardAgent |^LocalForward |^RemoteForward |^ProxyCommand |^ProxyJump " | column -t' \
     --preview-window=right:40% \
     --expect=alt-enter,enter
 }
