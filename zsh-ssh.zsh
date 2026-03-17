@@ -9,6 +9,7 @@ setopt no_beep # don't beep
 zstyle ':completion:*:ssh:*' hosts off # disable built-in hosts completion
 
 SSH_CONFIG_FILE="${SSH_CONFIG_FILE:-$HOME/.ssh/config}"
+FZF_SSH_LIST_KEY="${FZF_SSH_LIST_KEY:-^G}"
 
 # Parse the file and handle the include directive.
 _parse_config_file() {
@@ -113,6 +114,7 @@ _ssh_host_list() {
       aliases = ""
       desc = ""
       desc_formated = " "
+      cmd = ""
 
       for (line_num = 1; line_num <= NF; ++line_num) {
         line = parse_line($line_num)
@@ -128,6 +130,12 @@ _ssh_host_list() {
         if (key == "user") { user = value }
         if (key == "hostname") { host_name = value }
         if (key == "#_desc") { desc = value }
+        if (key == "#_cmd") {
+          cmd_value = tolower(value)
+          if (cmd_value == "ssh" || cmd_value == "sshrc") {
+            cmd = cmd_value
+          }
+        }
       }
 
       if (desc) {
@@ -149,6 +157,7 @@ _ssh_host_list() {
           alias_hn[alias] = effective_hostname
           alias_user[alias] = user
           alias_desc[alias] = desc_formated
+          alias_cmd[alias] = cmd
           if (host_name) alias_explicit_hn[alias] = 1
         } else {
           if (host_name && !alias_explicit_hn[alias]) {
@@ -161,12 +170,15 @@ _ssh_host_list() {
           if (desc_formated != " " && alias_desc[alias] == " ") {
             alias_desc[alias] = desc_formated
           }
+          if (cmd != "" && alias_cmd[alias] == "") {
+            alias_cmd[alias] = cmd
+          }
         }
       }
     }
     END {
       for (a in alias_hn) {
-        printf "%s|->|%s|%s|%s\n", a, alias_hn[a], alias_user[a], alias_desc[a]
+        printf "%s|->|%s|%s|%s|%s\n", a, alias_hn[a], alias_user[a], alias_desc[a], alias_cmd[a]
       }
     }
   ')
@@ -197,29 +209,96 @@ _fzf_list_generator() {
   fi
 
   header="
-Alias|->|Hostname|User|Desc
-─────|──|────────|────|────
+Alias|->|Hostname|User|Desc|Conn
+─────|──|────────|────|────|────
 "
 
   host_list="${header}\n${host_list}"
 
-  echo $host_list | command column -t -s '|'
+  printf '%b\n' "$host_list" | command tr '|' '\t'
 }
 
 _set_lbuffer() {
-  local result selected_host connect_cmd is_fzf_result cmd
+  local result selected_host connect_cmd is_fzf_result fallback_cmd selected_cmd
   result="$1"
   is_fzf_result="$2"
-  cmd="${3:-ssh}"
+  fallback_cmd="${3:-ssh}"
 
   if [ "$is_fzf_result" = false ] ; then
-    result=$(cut -f 1 -d "|" <<< ${result})
+    selected_host=$(cut -f 1 -d "|" <<< "$result")
+    selected_cmd=$(cut -f 5 -d "|" <<< "$result")
+  else
+    selected_host=$(cut -f 1 <<< "$result")
+    selected_cmd=$(cut -f 6 <<< "$result")
   fi
 
-  selected_host=$(cut -f 1 -d " " <<< ${result})
-  connect_cmd="${cmd} ${selected_host}"
+  if [[ "$selected_cmd" != "ssh" && "$selected_cmd" != "sshrc" ]]; then
+    selected_cmd="$fallback_cmd"
+  fi
+
+  connect_cmd="${selected_cmd} ${selected_host}"
 
   LBUFFER="$connect_cmd"
+}
+
+_fzf_pick_ssh_host() {
+  local host_list prompt query
+  host_list="$1"
+  prompt="${2:-SSH Remote > }"
+  query="$3"
+
+  _fzf_list_generator "$host_list" | fzf \
+    --height 40% \
+    --ansi \
+    --border \
+    --cycle \
+    --info=inline \
+    --header-lines=2 \
+    --reverse \
+    --prompt="$prompt" \
+    --query="$query" \
+    --no-separator \
+    --bind 'shift-tab:up,tab:down,bspace:backward-delete-char/eof' \
+    --preview 'ssh -T -G $(cut -f 1 <<< {}) | grep -i -E "^User |^HostName |^Port |^ControlMaster |^ForwardAgent |^LocalForward |^IdentityFile |^RemoteForward |^ProxyCommand |^ProxyJump " | column -t' \
+    --preview-window=right:40% \
+    --expect=alt-enter,enter
+}
+
+fzf_open_ssh_list() {
+  local result key selection host_list
+
+  host_list=$(_ssh_host_list)
+  if [[ -z "$host_list" ]]; then
+    zle reset-prompt
+    return
+  fi
+
+  result=$(_fzf_pick_ssh_host "$host_list" 'Server List > ' '')
+  if [[ -z "$result" ]]; then
+    zle reset-prompt
+    return
+  fi
+
+  key=${result%%$'\n'*}
+  if [[ "$key" == "$result" ]]; then
+    selection="$result"
+    key=""
+  else
+    selection=${result#*$'\n'}
+  fi
+
+  if [[ -n "$selection" ]]; then
+    _set_lbuffer "$selection" true ssh
+    if [[ "$key" == "alt-enter" ]]; then
+      zle reset-prompt
+    else
+      zle accept-line
+    fi
+  fi
+
+  if [[ "$key" != "alt-enter" ]]; then
+    zle reset-prompt
+  fi
 }
 
 fzf_complete_ssh() {
@@ -244,28 +323,13 @@ fzf_complete_ssh() {
     fi
 
     if [ $(echo $result | wc -l) -eq 1 ]; then
-      _set_lbuffer $result false $cmd
+      _set_lbuffer "$result" false "$cmd"
       zle reset-prompt
       # zle redisplay
       return
     fi
 
-    result=$(_fzf_list_generator $result | fzf \
-      --height 40% \
-      --ansi \
-      --border \
-      --cycle \
-      --info=inline \
-      --header-lines=2 \
-      --reverse \
-      --prompt='SSH Remote > ' \
-      --query=$fuzzy_input \
-      --no-separator \
-      --bind 'shift-tab:up,tab:down,bspace:backward-delete-char/eof' \
-      --preview 'ssh -T -G $(cut -f 1 -d " " <<< {}) | grep -i -E "^User |^HostName |^Port |^ControlMaster |^ForwardAgent |^LocalForward |^IdentityFile |^RemoteForward |^ProxyCommand |^ProxyJump " | column -t' \
-      --preview-window=right:40% \
-      --expect=alt-enter,enter
-    )
+    result=$(_fzf_pick_ssh_host "$result" 'SSH Remote > ' "$fuzzy_input")
 
     if [ -n "$result" ]; then
       key=${result%%$'\n'*}
@@ -308,5 +372,7 @@ fzf_complete_ssh() {
 
 zle -N fzf_complete_ssh
 bindkey '^I' fzf_complete_ssh
+zle -N fzf_open_ssh_list
+bindkey "$FZF_SSH_LIST_KEY" fzf_open_ssh_list
 
 # vim: set ft=zsh sw=2 ts=2 et

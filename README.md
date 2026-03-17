@@ -79,9 +79,19 @@ antigen bundle sunlei/zsh-ssh
 
 Just press <kbd>Tab</kbd> after `ssh` or `sshrc` command as usual.
 
+You can also press <kbd>Ctrl</kbd>+<kbd>G</kbd> to open the server list directly.
+
+If you want to customize this key binding, set:
+
+```shell
+FZF_SSH_LIST_KEY='^G'
+```
+
 ### SSH Config Example
 
 You can use `#_Desc` to set description.
+
+You can use `#_Cmd ssh` or `#_Cmd sshrc` to configure the connect command for each host.
 
 ~/.ssh/config
 
@@ -94,4 +104,9 @@ Host Development-Host
     Hostname 2.2.2.2
     IdentityFile ~/.ssh/development-host
     #_Desc For Development
+
+Host Production-Host
+    Hostname 3.3.3.3
+    #_Desc For Production
+    #_Cmd sshrc
 ```
